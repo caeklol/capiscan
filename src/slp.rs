@@ -1,6 +1,8 @@
-use std::{io::{Read, Write}, net::{IpAddr, SocketAddr, TcpStream}, num::TryFromIntError, str::FromStr, string::FromUtf8Error, time::{SystemTime, UNIX_EPOCH}};
+use std::{net::SocketAddr, string::FromUtf8Error, time::{SystemTime, UNIX_EPOCH}};
 
-use anyhow::{ensure, Error};
+use bincode::Encode;
+use serde::Deserialize;
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
 
 static SEGMENT_BITS: i32 = 0x7f;
 static CONTINUE_BIT: i32 = 0x80;
@@ -59,8 +61,8 @@ pub enum PacketParseError {
     PacketId(#[from] PacketIdError),
     #[error("Invalid packet length")]
     PacketLength(#[from] PacketLengthError),
-    #[error("Invalid packet data")]
-    PacketData
+    #[error("Failed to deserialize invalid packet data")]
+    Deserialize(#[from] serde_json::Error),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -186,43 +188,145 @@ impl Packet {
     }
 }
 
-#[derive(Debug)]
-pub struct StatusResponse {
-    
+#[derive(Encode, Deserialize, Debug)]
+pub enum Color {
+    #[serde(rename = "black")]
+    Black,
+    #[serde(rename = "dark_blue")]
+    DarkBlue,
+    #[serde(rename = "dark_green")]
+    DarkGreen,
+    #[serde(rename = "dark_aqua")]
+    DarkAqua,
+    #[serde(rename = "dark_red")]
+    DarkRed,
+    #[serde(rename = "dark_purple")]
+    DarkPurple,
+    #[serde(rename = "gold")]
+    Gold,
+    #[serde(rename = "gray")]
+    Gray,
+    #[serde(rename = "dark_gray")]
+    DarkGray,
+    #[serde(rename = "blue")]
+    Blue,
+    #[serde(rename = "green")]
+    Green,
+    #[serde(rename = "aqua")]
+    Aqua,
+    #[serde(rename = "red")]
+    Red,
+    #[serde(rename = "light_purple")]
+    LightPurple,
+    #[serde(rename = "yellow")]
+    Yellow,
+    #[serde(rename = "white")]
+    White,
 }
 
-pub fn server_list_ping(addr: SocketAddr) -> Result<StatusResponse, SlpError> {
+#[derive(Encode, Deserialize, Debug)]
+pub struct Component {
+    text: Option<String>,
+    color: Option<Color>,
+    bold: bool,
+    italic: bool,
+    underline: bool,
+    strikethrough: bool,
+    obfuscated: bool,
+    extra: Option<Vec<Component>>
+}
+
+#[derive(Encode, Deserialize, Debug)]
+#[serde(untagged)]
+pub enum TextComponent {
+    New(Component),
+    Old(String),
+}
+
+#[derive(Encode, Deserialize, Debug)]
+pub struct Version {
+    name: Option<String>,
+    protocol: Option<usize>
+}
+
+#[derive(Encode, Deserialize, Debug)]
+pub struct Player {
+    name: Option<String>,
+    id: Option<String>
+}
+
+#[derive(Encode, Deserialize, Debug)]
+pub struct Players {
+    max: Option<usize>,
+    online: Option<usize>,
+    sample: Option<Vec<Player>>
+}
+
+#[derive(Encode, Deserialize, Debug)]
+pub struct StatusResponse {
+     version: Option<Version>,
+     players: Option<Players>,
+     description: Option<TextComponent>,
+     favicon: Option<String>,
+     secure: Option<bool>
+}
+
+pub struct PingRequest {
+    pub addr: SocketAddr,
+    pub packet_addr: String
+}
+
+// This macro automatically constructs the required PingRequest using the input SocketAddr. If a
+// packet address is not provided (address to send) it uses the SocketAddress' ip. This is to allow
+// for flexibility in pinging, just in case in case reverse DNS might be used in the future.
+//
+// Alternatively, you can just use the underlying function.
+#[macro_export]
+macro_rules! slp {
+    ($addr:expr) => {
+        mc_scanner::slp::server_list_ping(crate::slp::PingRequest {
+            addr: $addr,
+            packet_addr: &$addr.ip().to_string()
+        })
+    };
+    ($addr:expr, $packet_addr: expr) => {
+        mc_scanner::slp::server_list_ping(crate::slp::PingRequest {
+            addr: $addr,
+            packet_addr: $packet_addr.to_string()
+        })
+    };
+}
+
+pub async fn server_list_ping(request: PingRequest) -> Result<StatusResponse, SlpError> {
     let mut packet = Packet::new();
 
     // handshake
     packet.write_byte(0);
     packet.write_var_int(760);
-    packet.write_string(&addr.ip().to_string());
-    //packet.write_string("mc.hypixel.net");
-    packet.write_short(addr.port());
+    packet.write_string(&request.packet_addr);
+    packet.write_short(request.addr.port());
     packet.write_var_int(1);
 
-    let mut stream = TcpStream::connect(addr)?;
-    stream.write(&packet.get_bytes())?;
-    stream.flush()?;
+    let mut stream = TcpStream::connect(request.addr).await?;
+    stream.write_all(&packet.get_bytes()).await?;
+    stream.flush().await?;
 
     // status request
     packet = Packet::new();
     packet.write_byte(0);
-    stream.write(&packet.get_bytes())?;
-    stream.flush()?;
+    stream.write_all(&packet.get_bytes()).await?;
+    stream.flush().await?;
 
     // ping request
     packet = Packet::new();
     packet.write_byte(1);
     packet.write_long(SystemTime::now().duration_since(UNIX_EPOCH).expect("time is moving backward").as_millis().try_into().expect("we are too far into the future"));
-    //packet.write_long(1752829549176);
-    stream.write(&packet.get_bytes())?;
-    stream.flush()?;
+    stream.write(&packet.get_bytes()).await?;
+    stream.flush().await?;
 
 
     let mut buf = Vec::new();
-    stream.read_to_end(&mut buf)?;
+    stream.read_to_end(&mut buf).await?;
 
     let mut frame = Packet::from(buf);
     let length = frame.read_var_int().map_err(|e| PacketParseError::PacketLength(PacketLengthError::VarInt(e)))?;
@@ -237,7 +341,7 @@ pub fn server_list_ping(addr: SocketAddr) -> Result<StatusResponse, SlpError> {
     }
 
     let json_str = packet.read_string().map_err(|e| PacketParseError::String(e))?;
-    println!("{}", json_str);
+    let res: StatusResponse = serde_json::from_str(&json_str).map_err(|e| PacketParseError::Deserialize(e))?;
 
-    Ok(StatusResponse {  })
+    Ok(res)
 }
