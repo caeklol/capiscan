@@ -1,7 +1,6 @@
-use std::{net::SocketAddr, string::FromUtf8Error, time::{SystemTime, UNIX_EPOCH}};
+use std::{net::SocketAddr, str::FromStr, string::FromUtf8Error, time::{SystemTime, UNIX_EPOCH}};
 
-use bincode::Encode;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
 
 static SEGMENT_BITS: i32 = 0x7f;
@@ -188,7 +187,7 @@ impl Packet {
     }
 }
 
-#[derive(Encode, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum Color {
     #[serde(rename = "black")]
     Black,
@@ -224,7 +223,7 @@ pub enum Color {
     White,
 }
 
-#[derive(Encode, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Component {
     text: Option<String>,
     color: Option<Color>,
@@ -236,33 +235,32 @@ pub struct Component {
     extra: Option<Vec<Component>>
 }
 
-#[derive(Encode, Deserialize, Debug)]
-#[serde(untagged)]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum TextComponent {
     New(Component),
     Old(String),
 }
 
-#[derive(Encode, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Version {
     name: Option<String>,
     protocol: Option<usize>
 }
 
-#[derive(Encode, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Player {
     name: Option<String>,
     id: Option<String>
 }
 
-#[derive(Encode, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Players {
     max: Option<usize>,
     online: Option<usize>,
     sample: Option<Vec<Player>>
 }
 
-#[derive(Encode, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct StatusResponse {
      version: Option<Version>,
      players: Option<Players>,
@@ -286,7 +284,7 @@ macro_rules! slp {
     ($addr:expr) => {
         mc_scanner::slp::server_list_ping(crate::slp::PingRequest {
             addr: $addr,
-            packet_addr: &$addr.ip().to_string()
+            packet_addr: $addr.ip().to_string()
         })
     };
     ($addr:expr, $packet_addr: expr) => {
