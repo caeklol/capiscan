@@ -288,7 +288,7 @@ pub struct PingRequest {
 #[macro_export]
 macro_rules! slp {
     ($addr:expr) => {
-        mc_scanner::slp::server_list_ping(crate::slp::PingRequest {
+        crate::slp::server_list_ping(crate::slp::PingRequest {
             addr: $addr,
             packet_addr: $addr.ip().to_string(),
             connect_timeout: std::time::Duration::from_millis(1000),
@@ -297,7 +297,7 @@ macro_rules! slp {
         })
     };
     ($addr:expr, $packet_addr: expr) => {
-        mc_scanner::slp::server_list_ping(crate::slp::PingRequest {
+        crate::slp::server_list_ping(crate::slp::PingRequest {
             addr: $addr,
             packet_addr: $packet_addr.to_string(),
             connect_timeout: std::time::Duration::from_millis(1000),
