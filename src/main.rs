@@ -2,9 +2,10 @@ use std::{cmp::{max, min}, fs, iter, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, 
 
 use anyhow::{Error, Result, anyhow};
 use clap::{arg, command, Parser};
-use futures::{stream, StreamExt};
+use futures::{stream, FutureExt, Stream, StreamExt};
 use ipnet::{Ipv4AddrRange, Ipv4Net};
-use mc_scanner::{parse::{self}, slp};
+use mc_scanner::{parse::{self}, slp::{SlpError, StatusResponse}};
+use mc_scanner::slp;
 use tokio::sync::Semaphore;
 
 static DEFAULT_EXCLUDE_LIST: &str = include_str!("../data/exclude.conf");
@@ -43,6 +44,7 @@ struct Args {
     target: Target,
 }
 
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let args = Args::parse();
@@ -59,13 +61,16 @@ async fn main() -> Result<(), Error> {
 
     let exclude_list = parse::parse_masscan(&exclude_str)?;
     let target_ranges = parse::parse_masscan(&args.target.to_str()?)?;
-    let target_ranges = parse::apply_exclude(target_ranges, exclude_list);
-        
+    let targets_filtered = parse::apply_exclude(target_ranges, exclude_list)
+        .iter()
+        .map(|t| (u32::from(t.0), u32::from(t.1)))
+        .collect::<Vec<(u32, u32)>>();
 
+    let chunked_targets = parse::chunk_ranges(targets_filtered, 20);
+    
+    // slp!(SocketAddr::from((ip, 25565))).await;
 
     println!("scanning...");
-    //println!("excluded_ranges: {:?}", exclude_list);
-    println!("target_ranges: {:?}", target_ranges);
 
     return Ok(());
 }

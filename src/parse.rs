@@ -117,3 +117,58 @@ pub fn apply_exclude(
         .map(|t| (Ipv4Addr::from(t.0), Ipv4Addr::from(t.1)))
         .collect::<Vec<(Ipv4Addr, Ipv4Addr)>>()
 }
+
+/// `chunks` is the amount of output chunks
+///
+/// ```
+/// use mc_scanner::parse::chunk_ranges;
+///
+/// let ranges = vec![(0, 4), (6, 10), (20, 21)];
+/// let chunked_ranges = chunk_ranges(ranges, 2);
+///
+/// assert_eq!(chunked_ranges, vec![vec![(0, 4), (6, 6)], vec![(7, 10), (20, 21)]])
+/// assert_eq!(chunked_ranges.len(), 2);
+/// ```
+pub fn chunk_ranges(ranges: Vec<(u32, u32)>, chunks: u32) -> Vec<Vec<(u32, u32)>> {
+    let total_span = ranges
+        .iter()
+        .fold(0u32, |acc, r| acc + (r.1-r.0) + 1);
+
+    let span_per_chunk = total_span / chunks;
+
+    let mut ranges = ranges.into_iter().peekable();
+    let mut out = vec![vec![]];
+    let mut acc = 0;
+
+    while let Some(r) = ranges.peek_mut() {
+        let span = (r.1 - r.0) + 1;
+        let new_size = acc + span;
+
+        if new_size == span_per_chunk {
+            let r = ranges.next().unwrap();
+            out.last_mut().unwrap().push(r);
+            out.push(vec![]);
+            acc = 0;
+        } else if new_size > span_per_chunk {
+            let excess = new_size - span_per_chunk;
+            let new_r = (r.0, r.1 - excess);
+            let new_span = (new_r.1 - new_r.0) + 1;
+
+            r.0 += new_span;
+
+            out.last_mut().unwrap().push(new_r);
+            out.push(vec![]);
+            acc = 0;
+        } else if new_size < span_per_chunk {
+            let r = ranges.next().unwrap();
+            out.last_mut().unwrap().push(r);
+            acc += span;
+        }
+    }
+
+    if out.len() > chunks.try_into().unwrap() {
+        out.pop();
+    }
+
+    out
+}
