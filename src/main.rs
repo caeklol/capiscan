@@ -1,12 +1,11 @@
-use std::{cmp::{max, min}, fs, iter, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, path::PathBuf, str::FromStr, sync::{Arc, Mutex}, time::Duration};
+use std::{fs, net::{Ipv4Addr, SocketAddr}, path::PathBuf, time::Duration};
 
 use anyhow::{Error, Result, anyhow};
-use clap::{arg, command, Parser};
-use futures::{stream, FutureExt, Stream, StreamExt};
+use clap::{command, Parser};
 use ipnet::{Ipv4AddrRange, Ipv4Net};
-use mc_scanner::{parse::{self}, slp::{SlpError, StatusResponse}};
+use mc_scanner::{range::{self}, slp::{SlpError, StatusResponse}};
 use mc_scanner::slp;
-use tokio::sync::Semaphore;
+use tokio::sync::mpsc;
 
 static DEFAULT_EXCLUDE_LIST: &str = include_str!("../data/exclude.conf");
 
@@ -59,18 +58,48 @@ async fn main() -> Result<(), Error> {
         },
     };
 
-    let exclude_list = parse::parse_masscan(&exclude_str)?;
-    let target_ranges = parse::parse_masscan(&args.target.to_str()?)?;
-    let targets_filtered = parse::apply_exclude(target_ranges, exclude_list)
-        .iter()
-        .map(|t| (u32::from(t.0), u32::from(t.1)))
-        .collect::<Vec<(u32, u32)>>();
+    let exclude_list = range::parse_masscan(&exclude_str)?;
+    let target_ranges = range::parse_masscan(&args.target.to_str()?)?;
+    println!("{:?}", target_ranges);
+    let targets_filtered = range::apply_exclude(target_ranges, exclude_list);
+    println!("{:?}", targets_filtered);
 
-    let chunked_targets = parse::chunk_ranges(targets_filtered, 20);
-    
-    // slp!(SocketAddr::from((ip, 25565))).await;
+    let threads: usize = 32768;
+    let chunked_targets = range::chunk_ranges(targets_filtered, threads.try_into().unwrap());
+    let total_targets = chunked_targets.len();
+
+    let (tx, mut rx) = mpsc::channel(100);
+
+    for target_ranges in &chunked_targets {
+        let tx = tx.clone();
+        let target_ranges = target_ranges.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            for (start, end) in target_ranges {
+                let start = u32::from(start);
+                let end = u32::from(end);
+                for ip_u in start..=end {
+                    let ip = Ipv4Addr::from(ip_u);
+                    let sock_addr = SocketAddr::from((ip, 25565));
+                    let res = slp!(sock_addr).await;
+
+                    tx.send((ip, res)).await.expect("failed to tx");
+                }
+            }
+        });
+    }
+
+    drop(tx);
+    drop(chunked_targets);
 
     println!("scanning...");
+
+    while let Some((ip, res)) = rx.recv().await {
+        if let Ok(res) = res {
+            println!("msg recieved for: {}, version: {:?}", ip, res.version);
+        }
+    }
+
 
     return Ok(());
 }

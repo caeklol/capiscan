@@ -1,7 +1,7 @@
-use std::{net::SocketAddr, str::FromStr, string::FromUtf8Error, time::{SystemTime, UNIX_EPOCH}};
+use std::{net::SocketAddr, str::FromStr, string::FromUtf8Error, time::{Duration, SystemTime, UNIX_EPOCH}};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, time::{error::Elapsed, timeout}};
 
 static SEGMENT_BITS: i32 = 0x7f;
 static CONTINUE_BIT: i32 = 0x80;
@@ -69,7 +69,9 @@ pub enum SlpError {
     #[error("Failed to ping")]
     IO(#[from] std::io::Error),
     #[error("Failed to parse response")]
-    Response(#[from] PacketParseError)
+    Response(#[from] PacketParseError),
+    #[error("Timed out")]
+    Timeout(#[from] Elapsed)
 }
 
 struct Packet {
@@ -236,6 +238,7 @@ pub struct Component {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(untagged)]
 pub enum TextComponent {
     New(Component),
     Old(String),
@@ -262,16 +265,19 @@ pub struct Players {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct StatusResponse {
-     version: Option<Version>,
-     players: Option<Players>,
-     description: Option<TextComponent>,
-     favicon: Option<String>,
-     secure: Option<bool>
+     pub version: Option<Version>,
+     pub players: Option<Players>,
+     pub description: Option<TextComponent>,
+     pub favicon: Option<String>,
+     pub secure: Option<bool>
 }
 
 pub struct PingRequest {
     pub addr: SocketAddr,
-    pub packet_addr: String
+    pub packet_addr: String,
+    pub connect_timeout: Duration,
+    pub write_timeout: Duration,
+    pub read_timeout: Duration
 }
 
 // This macro automatically constructs the required PingRequest using the input SocketAddr. If a
@@ -284,13 +290,19 @@ macro_rules! slp {
     ($addr:expr) => {
         mc_scanner::slp::server_list_ping(crate::slp::PingRequest {
             addr: $addr,
-            packet_addr: $addr.ip().to_string()
+            packet_addr: $addr.ip().to_string(),
+            connect_timeout: std::time::Duration::from_millis(1000),
+            write_timeout: std::time::Duration::from_millis(1000),
+            read_timeout: std::time::Duration::from_millis(1000)
         })
     };
     ($addr:expr, $packet_addr: expr) => {
         mc_scanner::slp::server_list_ping(crate::slp::PingRequest {
             addr: $addr,
-            packet_addr: $packet_addr.to_string()
+            packet_addr: $packet_addr.to_string(),
+            connect_timeout: std::time::Duration::from_millis(1000),
+            write_timeout: std::time::Duration::from_millis(1000),
+            read_timeout: std::time::Duration::from_millis(1000)
         })
     };
 }
@@ -305,26 +317,29 @@ pub async fn server_list_ping(request: PingRequest) -> Result<StatusResponse, Sl
     packet.write_short(request.addr.port());
     packet.write_var_int(1);
 
-    let mut stream = TcpStream::connect(request.addr).await?;
-    stream.write_all(&packet.get_bytes()).await?;
-    stream.flush().await?;
+    let mut stream = timeout(
+        request.connect_timeout,
+        TcpStream::connect(request.addr)
+    ).await??;
+    timeout(request.write_timeout, stream.write_all(&packet.get_bytes())).await??;
+    timeout(request.write_timeout, stream.flush()).await??;
 
     // status request
     packet = Packet::new();
     packet.write_byte(0);
-    stream.write_all(&packet.get_bytes()).await?;
-    stream.flush().await?;
+    timeout(request.write_timeout, stream.write_all(&packet.get_bytes())).await??;
+    timeout(request.write_timeout, stream.flush()).await??;
 
     // ping request
     packet = Packet::new();
     packet.write_byte(1);
     packet.write_long(SystemTime::now().duration_since(UNIX_EPOCH).expect("time is moving backward").as_millis().try_into().expect("we are too far into the future"));
-    stream.write(&packet.get_bytes()).await?;
-    stream.flush().await?;
+    timeout(request.write_timeout, stream.write_all(&packet.get_bytes())).await??;
+    timeout(request.write_timeout, stream.flush()).await??;
 
 
     let mut buf = Vec::new();
-    stream.read_to_end(&mut buf).await?;
+    timeout(request.read_timeout, stream.read_to_end(&mut buf)).await??;
 
     let mut frame = Packet::from(buf);
     let length = frame.read_var_int().map_err(|e| PacketParseError::PacketLength(PacketLengthError::VarInt(e)))?;

@@ -77,6 +77,7 @@ pub fn apply_exclude(
         .map(|t| (u32::from(t.0), u32::from(t.1)))
         .collect::<Vec<(u32, u32)>>();
 
+
     let exclude = merge_intervals(exclude);
     let target = merge_intervals(target);
 
@@ -129,12 +130,20 @@ pub fn apply_exclude(
 /// assert_eq!(chunked_ranges, vec![vec![(0, 4), (6, 6)], vec![(7, 10), (20, 21)]])
 /// assert_eq!(chunked_ranges.len(), 2);
 /// ```
-pub fn chunk_ranges(ranges: Vec<(u32, u32)>, chunks: u32) -> Vec<Vec<(u32, u32)>> {
+pub fn chunk_ranges(ranges: Vec<(Ipv4Addr, Ipv4Addr)>, chunks: u32) -> Vec<Vec<(Ipv4Addr, Ipv4Addr)>> {
+    let ranges = ranges
+        .iter()
+        .map(|t| (u32::from(t.0), u32::from(t.1)))
+        .collect::<Vec<(u32, u32)>>();
+
     let total_span = ranges
         .iter()
         .fold(0u32, |acc, r| acc + (r.1-r.0) + 1);
 
     let span_per_chunk = total_span / chunks;
+    if span_per_chunk == 0 {
+        return vec![ranges.iter().map(|t| (Ipv4Addr::from(t.0), Ipv4Addr::from(t.1))).collect()];
+    }
 
     let mut ranges = ranges.into_iter().peekable();
     let mut out = vec![vec![]];
@@ -171,4 +180,11 @@ pub fn chunk_ranges(ranges: Vec<(u32, u32)>, chunks: u32) -> Vec<Vec<(u32, u32)>
     }
 
     out
+        .into_iter()
+        .map(|ranges| ranges
+            .into_iter()
+            .map(|r| (Ipv4Addr::from(r.0), Ipv4Addr::from(r.1)))
+            .collect::<Vec<(Ipv4Addr, Ipv4Addr)>>()
+        )
+        .collect()
 }
