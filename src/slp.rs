@@ -321,20 +321,18 @@ pub async fn server_list_ping(request: PingRequest) -> Result<StatusResponse, Sl
         request.connect_timeout,
         TcpStream::connect(request.addr)
     ).await??;
-    timeout(request.write_timeout, stream.write_all(&packet.get_bytes())).await??;
-    timeout(request.write_timeout, stream.flush()).await??;
 
     // status request
-    packet = Packet::new();
-    packet.write_byte(0);
-    timeout(request.write_timeout, stream.write_all(&packet.get_bytes())).await??;
-    timeout(request.write_timeout, stream.flush()).await??;
+    let mut packet2 = Packet::new();
+    packet2.write_byte(0);
 
     // ping request
-    packet = Packet::new();
-    packet.write_byte(1);
-    packet.write_long(SystemTime::now().duration_since(UNIX_EPOCH).expect("time is moving backward").as_millis().try_into().expect("we are too far into the future"));
+    let mut packet3 = Packet::new();
+    packet3.write_byte(1);
+    packet3.write_long(SystemTime::now().duration_since(UNIX_EPOCH).expect("time is moving backward").as_millis().try_into().expect("we are too far into the future"));
     timeout(request.write_timeout, stream.write_all(&packet.get_bytes())).await??;
+    timeout(request.write_timeout, stream.write_all(&packet2.get_bytes())).await??;
+    timeout(request.write_timeout, stream.write_all(&packet3.get_bytes())).await??;
     timeout(request.write_timeout, stream.flush()).await??;
 
 
