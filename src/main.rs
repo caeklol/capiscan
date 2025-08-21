@@ -3,7 +3,7 @@ use std::{fs, net::{Ipv4Addr, SocketAddr}, path::PathBuf, sync::{atomic::{Atomic
 use anyhow::{Error, Result, anyhow};
 use clap::{command, ArgAction, Parser};
 use humantime::DurationError;
-use mc_scanner::{range, scanner::{Async, Naive, Scan, ScanEvent}, slp::StatusResponse};
+use mc_scanner::{circ::CircularBuffer, range, scanner::{Async, Naive, Scan, ScanEvent}, slp::StatusResponse};
 use tokio::sync::{mpsc, Mutex};
 
 static DEFAULT_EXCLUDE_LIST: &str = include_str!("../data/exclude.conf");
@@ -71,6 +71,7 @@ fn receive_thread(state: Arc<Mutex<ProgramState>>, mut rx: mpsc::Receiver<ScanEv
     })
 }
 
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let args = Args::parse();
@@ -103,12 +104,24 @@ async fn main() -> Result<(), Error> {
     let mut last_transmitted = 0;
     let mut last_discovered = 0;
 
+    let mut last_kpps = CircularBuffer::new(7);
+    let mut last_dps = CircularBuffer::new(7);
+
+    let interval = Duration::from_millis(1000);
     while !recieve_thread.is_finished() {
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        tokio::time::sleep(interval).await;
         let state = state.lock().await;
         let transmitted_count = state.transmitted - last_transmitted;
         let discovered_count = state.discovered.len() - last_discovered;
-        println!("txd: {}, d: {}", transmitted_count / 1000, discovered_count);
+
+        let interval_ms = interval.as_millis() as f32;
+        last_dps.push(discovered_count as f32 * (interval_ms / 1000.0));
+        last_kpps.push(transmitted_count as f32 / (interval_ms * 10.0));
+
+        let kpps = last_kpps.values().iter().fold(0.0, |acc, x| acc + *x) / last_dps.len() as f32;
+        let dps = last_dps.values().iter().fold(0.0, |acc, x| acc + *x) / last_dps.len() as f32;
+
+        println!("kpps: {}, dps: {} (discovered {})", kpps, dps, discovered_count);
 
         last_transmitted = state.transmitted;
         last_discovered = state.discovered.len();

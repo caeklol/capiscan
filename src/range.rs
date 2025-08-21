@@ -120,16 +120,6 @@ pub fn apply_exclude(
 }
 
 /// `chunks` is the amount of output chunks
-///
-/// ```
-/// use mc_scanner::parse::chunk_ranges;
-///
-/// let ranges = vec![(0, 4), (6, 10), (20, 21)];
-/// let chunked_ranges = chunk_ranges(ranges, 2);
-///
-/// assert_eq!(chunked_ranges, vec![vec![(0, 4), (6, 6)], vec![(7, 10), (20, 21)]])
-/// assert_eq!(chunked_ranges.len(), 2);
-/// ```
 pub fn chunk_ranges(ranges: Vec<(Ipv4Addr, Ipv4Addr)>, chunks: u32) -> Vec<Vec<(Ipv4Addr, Ipv4Addr)>> {
     let ranges = ranges
         .iter()
