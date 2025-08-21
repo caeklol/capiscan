@@ -1,14 +1,17 @@
-use std::{net::{Ipv4Addr, SocketAddr}, time::Duration};
+use std::net::{Ipv4Addr, SocketAddr};
 
-use anyhow::Error;
 use tokio::sync::mpsc;
 
-use crate::{range, slp::{SlpError, StatusResponse}};
+use crate::{range, slp::StatusResponse};
 use crate::slp;
 
+pub enum ScanEvent {
+    Discovered(Ipv4Addr, StatusResponse),
+    Transmitted(Ipv4Addr)
+}
+
 pub trait Scan {
-    type Response;
-    fn scan(&mut self, ranges: Vec<(Ipv4Addr, Ipv4Addr)>, tx: mpsc::Sender<Self::Response>);
+    fn scan(&mut self, ranges: Vec<(Ipv4Addr, Ipv4Addr)>, tx: mpsc::Sender<ScanEvent>);
 }
 
 pub struct Naive {
@@ -26,9 +29,7 @@ impl Naive {
 }
 
 impl Scan for Naive {
-    type Response = (Ipv4Addr, StatusResponse);
-
-    fn scan(&mut self, ranges: Vec<(Ipv4Addr, Ipv4Addr)>, tx: mpsc::Sender<Self::Response>) {
+    fn scan(&mut self, ranges: Vec<(Ipv4Addr, Ipv4Addr)>, tx: mpsc::Sender<ScanEvent>) {
         let chunked_targets = range::chunk_ranges(ranges, self.threads.try_into().expect("cannot use more than u32::MAX threads!"));
 
         for target_ranges in &chunked_targets {
@@ -45,12 +46,42 @@ impl Scan for Naive {
                         let sock_addr = SocketAddr::from((ip, port));
                         let res = slp!(sock_addr).await;
 
+                        
+                        tx.send(ScanEvent::Transmitted(ip)).await.expect("failed to send message across channel");
+
                         if let Ok(res) = res {
-                            tx.send((ip, res)).await.expect("failed to tx");
+                            tx.send(ScanEvent::Discovered(ip, res)).await.expect("failed to send message across channel");
                         }
                     }
                 }
             });
+        }
+    }
+}
+
+pub struct Async {
+    target_port: u16,
+    source_port: u16
+}
+
+impl Async {
+    pub fn new(source_port: u16, target_port: u16) -> Self {
+        Self {
+            target_port,
+            source_port
+        }
+    }
+}
+
+impl Scan for Async {
+    fn scan(&mut self, ranges: Vec<(Ipv4Addr, Ipv4Addr)>, tx: mpsc::Sender<ScanEvent>) {
+        unimplemented!();
+        for (start, end) in ranges {
+            let start = u32::from(start);
+            let end = u32::from(end);
+            for ip in start..=end {
+
+            }
         }
     }
 }
