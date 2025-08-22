@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, str::FromStr, string::FromUtf8Error, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{net::{IpAddr, Ipv4Addr, SocketAddr}, str::FromStr, string::FromUtf8Error, time::{Duration, SystemTime, UNIX_EPOCH}};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, time::{error::Elapsed, timeout}};
@@ -307,20 +307,15 @@ macro_rules! slp {
     };
 }
 
-pub async fn server_list_ping(request: PingRequest) -> Result<StatusResponse, SlpError> {
+pub fn create_slp_packet(ip: IpAddr, port: u16) -> Vec<u8> {
     let mut packet = Packet::new();
 
     // handshake
     packet.write_byte(0);
     packet.write_var_int(760);
-    packet.write_string(&request.packet_addr);
-    packet.write_short(request.addr.port());
+    packet.write_string(&ip.to_string());
+    packet.write_short(port);
     packet.write_var_int(1);
-
-    let mut stream = timeout(
-        request.connect_timeout,
-        TcpStream::connect(request.addr)
-    ).await??;
 
     // status request
     let mut packet2 = Packet::new();
@@ -330,15 +325,18 @@ pub async fn server_list_ping(request: PingRequest) -> Result<StatusResponse, Sl
     let mut packet3 = Packet::new();
     packet3.write_byte(1);
     packet3.write_long(SystemTime::now().duration_since(UNIX_EPOCH).expect("time is moving backward").as_millis().try_into().expect("we are too far into the future"));
-    timeout(request.write_timeout, stream.write_all(&packet.get_bytes())).await??;
-    timeout(request.write_timeout, stream.write_all(&packet2.get_bytes())).await??;
-    timeout(request.write_timeout, stream.write_all(&packet3.get_bytes())).await??;
-    timeout(request.write_timeout, stream.flush()).await??;
 
+    // Packet::new() is necessary per packet for correct length prefixes,
+    // however, thanks to the nature of TCP (stream), all packets can be sent
+    // simultaneously
+    let mut bytes = packet.get_bytes();
+    bytes.append(&mut packet2.get_bytes());
+    bytes.append(&mut packet3.get_bytes());
 
-    let mut buf = Vec::new();
-    timeout(request.read_timeout, stream.read_to_end(&mut buf)).await??;
+    bytes
+}
 
+pub fn parse_slp_packet(buf: Vec<u8>) -> Result<StatusResponse, PacketParseError> {
     let mut frame = Packet::from(buf);
     let length = frame.read_var_int().map_err(|e| PacketParseError::PacketLength(PacketLengthError::VarInt(e)))?;
 
@@ -352,7 +350,22 @@ pub async fn server_list_ping(request: PingRequest) -> Result<StatusResponse, Sl
     }
 
     let json_str = packet.read_string().map_err(|e| PacketParseError::String(e))?;
-    let res: StatusResponse = serde_json::from_str(&json_str).map_err(|e| PacketParseError::Deserialize(e))?;
+    Ok(serde_json::from_str(&json_str).map_err(|e| PacketParseError::Deserialize(e))?)
+}
 
-    Ok(res)
+pub async fn server_list_ping(request: PingRequest) -> Result<StatusResponse, SlpError> {
+    let mut stream = timeout(
+        request.connect_timeout,
+        TcpStream::connect(request.addr)
+    ).await??;
+    
+    let packet = create_slp_packet(request.addr.ip(), request.addr.port());
+    
+    timeout(request.write_timeout, stream.write_all(&packet)).await??;
+    timeout(request.write_timeout, stream.flush()).await??;
+
+    let mut buf = Vec::new();
+    timeout(request.read_timeout, stream.read_to_end(&mut buf)).await??;
+
+    Ok(parse_slp_packet(buf)?)
 }

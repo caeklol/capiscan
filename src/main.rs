@@ -71,7 +71,6 @@ fn receive_thread(state: Arc<Mutex<ProgramState>>, mut rx: mpsc::Receiver<ScanEv
     })
 }
 
-
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let args = Args::parse();
@@ -121,7 +120,7 @@ async fn main() -> Result<(), Error> {
         let kpps = last_kpps.values().iter().fold(0.0, |acc, x| acc + *x) / last_dps.len() as f32;
         let dps = last_dps.values().iter().fold(0.0, |acc, x| acc + *x) / last_dps.len() as f32;
 
-        println!("kpps: {}, dps: {} (discovered {})", kpps, dps, discovered_count);
+        println!("kpps: {}, dps: {} (discovered {} total)", kpps, dps, state.discovered.len());
 
         last_transmitted = state.transmitted;
         last_discovered = state.discovered.len();

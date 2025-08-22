@@ -46,7 +46,6 @@ impl Scan for Naive {
                         let sock_addr = SocketAddr::from((ip, port));
                         let res = slp!(sock_addr).await;
 
-                        
                         tx.send(ScanEvent::Transmitted(ip)).await.expect("failed to send message across channel");
 
                         if let Ok(res) = res {
