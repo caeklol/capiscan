@@ -1,10 +1,12 @@
-use std::{fs, net::{Ipv4Addr, SocketAddr}, path::PathBuf, sync::{atomic::{AtomicUsize, Ordering}, Arc, RwLock}, time::{Duration, Instant}};
+use std::{net::{Ipv4Addr, SocketAddr}, path::PathBuf, sync::{atomic::{AtomicUsize, Ordering}, Arc, RwLock}, time::{Duration, Instant}};
 
+use async_bincode::tokio::AsyncBincodeWriter;
+use futures::SinkExt;
 use anyhow::{Error, Result, anyhow};
 use clap::{command, ArgAction, Parser};
-use humantime::DurationError;
 use mc_scanner::{circ::CircularBuffer, range, scanner::{Async, Naive, Scan, ScanEvent}, slp::StatusResponse};
-use tokio::sync::{mpsc, Mutex};
+use serde::Serialize;
+use tokio::{fs::{self, File}, io::AsyncWriteExt, sync::{mpsc, Mutex}};
 
 static DEFAULT_EXCLUDE_LIST: &str = include_str!("../data/exclude.conf");
 
@@ -18,9 +20,9 @@ struct Target {
 }
 
 impl Target {
-    pub fn to_str(&self) -> Result<String, std::io::Error> {
+    pub async fn to_str(&self) -> Result<String, std::io::Error> {
         if let Some(file_path) = &self.target_file {
-            Ok(fs::read_to_string(file_path)?)
+            Ok(fs::read_to_string(file_path).await?)
         } else if let Some(target) = &self.target {
             Ok(target.clone())
         } else {
@@ -36,6 +38,10 @@ impl Target {
 struct Args {
     #[clap(flatten)]
     target: Target,
+    #[clap(long, default_value = "./capiscan.state", help = "program state path. progress and discovered servers is saved here atomically via tmp file")]
+    state_file: PathBuf,
+    #[clap(short, long, help = "save state directly to file")]
+    no_atomic: bool,
     #[clap(long, default_value = "./exclude.conf", help = "exclude file path. automatically generated if not populated")]
     exclude_file: PathBuf,
     //#[clap(value_parser = humantime::parse_duration, default_value = "1000ms")]
@@ -46,14 +52,13 @@ struct Args {
     source_port: Option<u16>,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize)]
 struct ProgramState {
     pub transmitted: usize,
     pub discovered: Vec<(Ipv4Addr, StatusResponse)>,
 }
 
-
-// not to be confused with the async TCP recieve thread, this thread recieves messages from the
+// not to be confusedwith the async TCP recieve thread, this thread recieves messages from the
 // current scanner implementation and saves necessary values
 fn receive_thread(state: Arc<Mutex<ProgramState>>, mut rx: mpsc::Receiver<ScanEvent>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -75,20 +80,21 @@ fn receive_thread(state: Arc<Mutex<ProgramState>>, mut rx: mpsc::Receiver<ScanEv
 async fn main() -> Result<(), Error> {
     let args = Args::parse();
 
-    let exclude_str = match fs::read_to_string(&args.exclude_file) {
+    let exclude_str = match fs::read_to_string(&args.exclude_file).await {
         Ok(list) => list,
         Err(e) => {
             eprintln!("could not read exclude list: {}", e);
             println!("generating & using default exclude list");
-            fs::write(args.exclude_file, DEFAULT_EXCLUDE_LIST)?;
+            fs::write(args.exclude_file, DEFAULT_EXCLUDE_LIST).await?;
             DEFAULT_EXCLUDE_LIST.to_owned()
         },
     };
 
     let exclude_list = range::parse_masscan(&exclude_str)?;
-    let target_ranges = range::parse_masscan(&args.target.to_str()?)?;
+    let target_ranges = range::parse_masscan(&args.target.to_str().await?)?;
     let targets_filtered = range::apply_exclude(target_ranges, exclude_list);
 
+    let state = Arc::new(Mutex::new(ProgramState::default()));
     let (tx, rx) = mpsc::channel(100);
 
     if args.asynchronous {
@@ -97,7 +103,6 @@ async fn main() -> Result<(), Error> {
         Naive::new(25565, 32767).scan(targets_filtered, tx);
     }
 
-    let state = Arc::new(Mutex::new(ProgramState::default()));
     let recieve_thread = receive_thread(state.clone(), rx);
 
     let mut last_transmitted = 0;
@@ -107,6 +112,7 @@ async fn main() -> Result<(), Error> {
     let mut last_dps = CircularBuffer::new(7);
 
     let interval = Duration::from_millis(1000);
+
     while !recieve_thread.is_finished() {
         tokio::time::sleep(interval).await;
         let state = state.lock().await;
@@ -124,7 +130,30 @@ async fn main() -> Result<(), Error> {
 
         last_transmitted = state.transmitted;
         last_discovered = state.discovered.len();
-        drop(state);
+
+        if args.no_atomic {
+            let state_file = File::create(&args.state_file).await?;
+            let mut writer = AsyncBincodeWriter::from(state_file).for_async();
+            writer.send(&*state).await?;
+        } else {
+            let tmp_path = args.state_file.with_extension("swp");
+            let state_file = File::create(&tmp_path).await?;
+            let mut writer = AsyncBincodeWriter::from(state_file).for_async();
+
+            if let Err(e) = writer.send(&*state).await {
+                eprintln!("save to tmp file failed!");
+                eprintln!("note: your `{}.swp` may not have the latest data", args.state_file.to_string_lossy());
+                panic!("Error: {:#?}", e);
+            }
+
+            drop(state);
+
+            if let Err(e) = tokio::fs::rename(&tmp_path, &args.state_file).await {
+                eprintln!("rename from .swp to state_file failed!");
+                eprintln!("note: your `{}.swp` file may have the latest data", args.state_file.to_string_lossy());
+                panic!("Error: {:#?}", e);
+            }
+        }
     }
        
     return Ok(());

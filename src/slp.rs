@@ -307,13 +307,13 @@ macro_rules! slp {
     };
 }
 
-pub fn create_slp_packet(ip: IpAddr, port: u16) -> Vec<u8> {
+pub fn create_slp_packet(packet_addr: &str, port: u16) -> Vec<u8> {
     let mut packet = Packet::new();
 
     // handshake
     packet.write_byte(0);
     packet.write_var_int(760);
-    packet.write_string(&ip.to_string());
+    packet.write_string(packet_addr);
     packet.write_short(port);
     packet.write_var_int(1);
 
@@ -359,7 +359,7 @@ pub async fn server_list_ping(request: PingRequest) -> Result<StatusResponse, Sl
         TcpStream::connect(request.addr)
     ).await??;
     
-    let packet = create_slp_packet(request.addr.ip(), request.addr.port());
+    let packet = create_slp_packet(&request.packet_addr, request.addr.port());
     
     timeout(request.write_timeout, stream.write_all(&packet)).await??;
     timeout(request.write_timeout, stream.flush()).await??;

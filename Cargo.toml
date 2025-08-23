@@ -5,8 +5,10 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.98"
-bincode = { version = "2.0.1", features = ["std", "derive"] }
+async-bincode = { version = "0.8.0", features = ["futures"] }
+bincode = { version = "2.0.1", features = ["serde"] }
 clap = { version = "4.5.41", features = ["derive"] }
+futures = "0.3.31"
 humantime = "2.2.0"
 ipnet = "2.11.0"
 serde = { version = "1.0.219", features = ["derive"] }
