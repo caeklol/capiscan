@@ -25,10 +25,10 @@ generated at `./exclude.conf`
 
 ##### `--state-file`
 binary format state-file. not meant to be human read, this is just to resume in-progress \
-scans. this is atomically saved unless you use `--no-atomic`. `-s` for shorthand
+scans. this is atomically saved unless you use [`--no-atomic`](#noatomic). `-s` for shorthand
 
 ##### `--no-atomic`
-<a name="my-custom-anchor-point"></a>
+<a name="noatomic"></a>
 disables atomic save for binary format state file
 
 ### motivation
